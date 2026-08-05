@@ -15,8 +15,8 @@ logger = logging.getLogger("ticketing-app")
 app = Flask(__name__)
 _w = WorkspaceClient()
 
-# Table names
-TICKETS_TABLE = "support_tickets"
+# Table names - using existing tables from ticketing system database
+TICKETS_TABLE = "tickets"
 MESSAGES_TABLE = "ticket_messages"
 
 
@@ -29,61 +29,32 @@ def _current_user_email() -> str:
 
 
 def ensure_tables():
-    """Create the tickets and messages tables if they don't exist."""
-    # Create tickets table
-    lakebase.run_write(f"""
-        CREATE TABLE IF NOT EXISTS {TICKETS_TABLE} (
-            id SERIAL PRIMARY KEY,
-            ticket_id TEXT UNIQUE NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            status TEXT NOT NULL DEFAULT 'open',
-            priority TEXT DEFAULT 'medium',
-            requester_email TEXT NOT NULL,
-            assigned_to TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    
-    # Create messages table
-    lakebase.run_write(f"""
-        CREATE TABLE IF NOT EXISTS {MESSAGES_TABLE} (
-            id SERIAL PRIMARY KEY,
-            ticket_id TEXT NOT NULL,
-            author_email TEXT NOT NULL,
-            author_name TEXT NOT NULL,
-            message TEXT NOT NULL,
-            is_internal BOOLEAN DEFAULT false,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            FOREIGN KEY (ticket_id) REFERENCES {TICKETS_TABLE}(ticket_id) ON DELETE CASCADE
-        )
-    """)
-    
-    # Create indexes
-    lakebase.run_write(f"""
-        CREATE INDEX IF NOT EXISTS idx_tickets_requester 
-        ON {TICKETS_TABLE}(requester_email)
-    """)
-    
-    lakebase.run_write(f"""
-        CREATE INDEX IF NOT EXISTS idx_tickets_status 
-        ON {TICKETS_TABLE}(status)
-    """)
-    
-    lakebase.run_write(f"""
-        CREATE INDEX IF NOT EXISTS idx_messages_ticket 
-        ON {MESSAGES_TABLE}(ticket_id)
-    """)
+    """Tables already exist in the ticketing system database - just verify connectivity."""
+    # Verify tables exist by checking their structure
+    try:
+        lakebase.run_query(f"SELECT 1 FROM {TICKETS_TABLE} LIMIT 1")
+        lakebase.run_query(f"SELECT 1 FROM {MESSAGES_TABLE} LIMIT 1")
+        logger.info("✅ Successfully connected to existing ticketing system tables")
+    except Exception as e:
+        logger.error(f"❌ Could not connect to ticketing system tables: {e}")
+        raise
 
 
 def generate_ticket_id() -> str:
     """Generate a unique ticket ID like TKT-1001."""
+    # Get the max ticket_id from existing tickets
     result = lakebase.run_query(
-        f"SELECT MAX(id) as max_id FROM {TICKETS_TABLE}"
+        f"SELECT ticket_id FROM {TICKETS_TABLE} ORDER BY created_at DESC LIMIT 1"
     )
-    max_id = result[0].get('max_id') or 0
-    return f"TKT-{1000 + max_id + 1}"
+    if result and result[0].get('ticket_id'):
+        last_id = result[0]['ticket_id']
+        # Extract number from TKT-1001 format
+        import re
+        match = re.search(r'TKT-(\d+)', last_id)
+        if match:
+            num = int(match.group(1)) + 1
+            return f"TKT-{num:04d}"
+    return "TKT-1001"
 
 
 @app.route("/healthz")
@@ -118,14 +89,16 @@ def get_tickets():
     
     if status_filter and status_filter != "all":
         tickets = lakebase.run_query(f"""
-            SELECT * FROM {TICKETS_TABLE}
+            SELECT ticket_id, title, status, created_by, created_at 
+            FROM {TICKETS_TABLE}
             WHERE status = %s
-            ORDER BY updated_at DESC
+            ORDER BY created_at DESC
         """, (status_filter,))
     else:
         tickets = lakebase.run_query(f"""
-            SELECT * FROM {TICKETS_TABLE}
-            ORDER BY updated_at DESC
+            SELECT ticket_id, title, status, created_by, created_at 
+            FROM {TICKETS_TABLE}
+            ORDER BY created_at DESC
         """)
     
     return jsonify(tickets)
@@ -137,7 +110,6 @@ def create_ticket():
     data = request.json
     title = data.get("title", "").strip()
     description = data.get("description", "").strip()
-    priority = data.get("priority", "medium")
     
     if not title:
         return jsonify({"error": "Title is required"}), 400
@@ -145,19 +117,20 @@ def create_ticket():
     user_email = _current_user_email()
     ticket_id = generate_ticket_id()
     
+    # Insert using existing table schema: ticket_id, title, status, created_by, created_at
     lakebase.run_write(f"""
         INSERT INTO {TICKETS_TABLE} 
-        (ticket_id, title, description, priority, requester_email, status)
-        VALUES (%s, %s, %s, %s, %s, 'open')
-    """, (ticket_id, title, description, priority, user_email))
+        (ticket_id, title, status, created_by, created_at)
+        VALUES (%s, %s, %s, %s, now())
+    """, (ticket_id, title, 'open', user_email))
     
-    # Add initial message
-    author_name = user_email.split('@')[0].title()
-    lakebase.run_write(f"""
-        INSERT INTO {MESSAGES_TABLE}
-        (ticket_id, author_email, author_name, message)
-        VALUES (%s, %s, %s, %s)
-    """, (ticket_id, user_email, author_name, description or "Ticket created"))
+    # Add initial message using existing schema: message_id, ticket_id, message_text, author, created_at
+    if description:
+        lakebase.run_write(f"""
+            INSERT INTO {MESSAGES_TABLE}
+            (ticket_id, message_text, author, created_at)
+            VALUES (%s, %s, %s, now())
+        """, (ticket_id, description, user_email))
     
     return jsonify({
         "ticket_id": ticket_id,
@@ -170,7 +143,8 @@ def create_ticket():
 def get_ticket(ticket_id):
     """Get a specific ticket with its details."""
     tickets = lakebase.run_query(f"""
-        SELECT * FROM {TICKETS_TABLE}
+        SELECT ticket_id, title, status, created_by, created_at 
+        FROM {TICKETS_TABLE}
         WHERE ticket_id = %s
     """, (ticket_id,))
     
@@ -189,7 +163,7 @@ def update_ticket(ticket_id):
     if status:
         lakebase.run_write(f"""
             UPDATE {TICKETS_TABLE}
-            SET status = %s, updated_at = now()
+            SET status = %s
             WHERE ticket_id = %s
         """, (status, ticket_id))
     
@@ -200,7 +174,8 @@ def update_ticket(ticket_id):
 def get_messages(ticket_id):
     """Get all messages for a ticket."""
     messages = lakebase.run_query(f"""
-        SELECT * FROM {MESSAGES_TABLE}
+        SELECT message_id, ticket_id, message_text, author, created_at 
+        FROM {MESSAGES_TABLE}
         WHERE ticket_id = %s
         ORDER BY created_at ASC
     """, (ticket_id,))
@@ -220,18 +195,12 @@ def add_message(ticket_id):
     user_email = _current_user_email()
     author_name = user_email.split('@')[0].title()
     
+    # Insert message using existing schema
     lakebase.run_write(f"""
         INSERT INTO {MESSAGES_TABLE}
-        (ticket_id, author_email, author_name, message)
-        VALUES (%s, %s, %s, %s)
-    """, (ticket_id, user_email, author_name, message_text))
-    
-    # Update ticket's updated_at timestamp
-    lakebase.run_write(f"""
-        UPDATE {TICKETS_TABLE}
-        SET updated_at = now()
-        WHERE ticket_id = %s
-    """, (ticket_id,))
+        (ticket_id, message_text, author, created_at)
+        VALUES (%s, %s, %s, now())
+    """, (ticket_id, message_text, user_email))
     
     return jsonify({"success": True})
 

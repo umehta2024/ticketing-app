@@ -76,27 +76,23 @@ ticket-app/
 
 ## Database Tables
 
-The app creates two Lakebase (Postgres) tables:
+**The app uses EXISTING tables from your Lakebase "ticketing system" database:**
 
-### `support_tickets`
-- `id` (serial primary key)
-- `ticket_id` (unique, e.g., "TKT-1001")
-- `title`
-- `description`
-- `status` (open, in-progress, closed)
-- `priority` (low, medium, high)
-- `requester_email`
-- `assigned_to`
-- `created_at`, `updated_at`
+### `tickets` (existing table)
+- `ticket_id` - Unique ticket identifier (e.g., "TKT-1001")
+- `title` - Ticket title/subject
+- `status` - Ticket status (open, in-progress, closed)
+- `created_by` - Email of ticket creator
+- `created_at` - Timestamp when ticket was created
 
-### `ticket_messages`
-- `id` (serial primary key)
-- `ticket_id` (foreign key)
-- `author_email`
-- `author_name`
-- `message`
-- `is_internal`
-- `created_at`
+### `ticket_messages` (existing table)
+- `message_id` - Auto-generated message ID
+- `ticket_id` - Reference to parent ticket
+- `message_text` - The message content
+- `author` - Email of message author
+- `created_at` - Timestamp when message was posted
+
+**Note:** The app does NOT create these tables - they must already exist in your Lakebase database.
 
 ---
 
