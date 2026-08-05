@@ -23,10 +23,9 @@ _KEY = os.environ.get("LAKEBASE_SECRET_KEY", "lakebase-url")
 
 
 def _lakebase_url() -> str:
-    """Fetch the Lakebase connection URL from the Databricks secret scope."""
+    """Fetch and decode the Lakebase connection URL from the Databricks secret scope."""
     secret = _w.secrets.get_secret(scope=_SCOPE, key=_KEY)
-    # SDK already decodes from base64, return the value directly
-    return secret.value
+    return base64.b64decode(secret.value).decode("utf-8")
 
 
 @contextmanager
