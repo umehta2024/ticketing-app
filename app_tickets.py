@@ -199,16 +199,13 @@ def add_message(ticket_id):
     if not message_text:
         return jsonify({"error": "Message is required"}), 400
     
-    user_email = _current_user_email()
-    author_name = user_email.split('@')[0].title()
-    
-    # Insert message using existing schema
+    # Insert message using existing schema - author is always 'support'
     message_id = generate_message_id()
     lakebase.run_write(f"""
         INSERT INTO {MESSAGES_TABLE}
         (message_id, ticket_id, message_text, author, created_at)
         VALUES (%s, %s, %s, %s, now())
-    """, (message_id, ticket_id, message_text, user_email))
+    """, (message_id, ticket_id, message_text, 'support'))
     
     return jsonify({"success": True})
 
