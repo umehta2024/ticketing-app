@@ -40,21 +40,24 @@ def ensure_tables():
         raise
 
 
-def generate_ticket_id() -> str:
-    """Generate a unique ticket ID like TKT-1001."""
-    # Get the max ticket_id from existing tickets
+def generate_ticket_id() -> int:
+    """Generate the next ticket ID as an integer."""
     result = lakebase.run_query(
-        f"SELECT ticket_id FROM {TICKETS_TABLE} ORDER BY created_at DESC LIMIT 1"
+        f"SELECT MAX(ticket_id) as max_id FROM {TICKETS_TABLE}"
     )
-    if result and result[0].get('ticket_id'):
-        last_id = result[0]['ticket_id']
-        # Extract number from TKT-1001 format
-        import re
-        match = re.search(r'TKT-(\d+)', last_id)
-        if match:
-            num = int(match.group(1)) + 1
-            return f"TKT-{num:04d}"
-    return "TKT-1001"
+    if result and result[0].get('max_id') is not None:
+        return result[0]['max_id'] + 1
+    return 1  # Start from 1 if no tickets exist
+
+
+def generate_message_id() -> int:
+    """Generate the next message ID as an integer."""
+    result = lakebase.run_query(
+        f"SELECT MAX(message_id) as max_id FROM {MESSAGES_TABLE}"
+    )
+    if result and result[0].get('max_id') is not None:
+        return result[0]['max_id'] + 1
+    return 1  # Start from 1 if no messages exist
 
 
 @app.route("/healthz")
@@ -108,29 +111,33 @@ def get_tickets():
 def create_ticket():
     """Create a new support ticket."""
     data = request.json
+    created_by = data.get("created_by", "").strip()
     title = data.get("title", "").strip()
     description = data.get("description", "").strip()
     
+    if not created_by:
+        return jsonify({"error": "Name is required"}), 400
     if not title:
         return jsonify({"error": "Title is required"}), 400
     
-    user_email = _current_user_email()
     ticket_id = generate_ticket_id()
     
     # Insert using existing table schema: ticket_id, title, status, created_by, created_at
+    # Status is always 'open' for new tickets
     lakebase.run_write(f"""
         INSERT INTO {TICKETS_TABLE} 
         (ticket_id, title, status, created_by, created_at)
         VALUES (%s, %s, %s, %s, now())
-    """, (ticket_id, title, 'open', user_email))
+    """, (ticket_id, title, 'open', created_by))
     
     # Add initial message using existing schema: message_id, ticket_id, message_text, author, created_at
     if description:
+        message_id = generate_message_id()
         lakebase.run_write(f"""
             INSERT INTO {MESSAGES_TABLE}
-            (ticket_id, message_text, author, created_at)
-            VALUES (%s, %s, %s, now())
-        """, (ticket_id, description, user_email))
+            (message_id, ticket_id, message_text, author, created_at)
+            VALUES (%s, %s, %s, %s, now())
+        """, (message_id, ticket_id, description, created_by))
     
     return jsonify({
         "ticket_id": ticket_id,
@@ -196,11 +203,12 @@ def add_message(ticket_id):
     author_name = user_email.split('@')[0].title()
     
     # Insert message using existing schema
+    message_id = generate_message_id()
     lakebase.run_write(f"""
         INSERT INTO {MESSAGES_TABLE}
-        (ticket_id, message_text, author, created_at)
-        VALUES (%s, %s, %s, now())
-    """, (ticket_id, message_text, user_email))
+        (message_id, ticket_id, message_text, author, created_at)
+        VALUES (%s, %s, %s, %s, now())
+    """, (message_id, ticket_id, message_text, user_email))
     
     return jsonify({"success": True})
 
